@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "idaipy"
+version = "0.2.0"
+description = "IdaIpy 远程执行客户端 — 通过 RPyC 连接 IDA Pro"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+
+dependencies = [
+    "rpyc>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build",
+    "twine",
+]
+
+[project.scripts]
+idaipy = "idaipy.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["idaipy*"]

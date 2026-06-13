@@ -1,0 +1,4 @@
+HOST = "127.0.0.1"
+PORT = 7123
+TIMEOUT = 300
+DEBUG = False
