@@ -358,3 +358,37 @@ class IdaIpyClient:
             List of task info dicts.
         """
         return list(self._conn.root.list_tasks())
+
+    # ── MBA Handler 热更新 ─────────────────────────────
+
+    def reload_mba_handler(self, name: str) -> Result:
+        """热更新指定的 MBA handler。
+
+        Args:
+            name: handler 名称（不含 .py），如 "deflatten"
+
+        Returns:
+            Result dataclass with status, handler, rule_count.
+        """
+        return Result.from_dict(
+            self._conn.root.reload_mba_handler(name)
+        )
+
+    def list_mba_handlers(self) -> list:
+        """列出所有已注册的 MBA handlers。
+
+        Returns:
+            List of handler info dicts with name, status, rule_count.
+        """
+        return list(self._conn.root.list_mba_handlers())
+
+    def get_mba_handler_status(self, name: str) -> Dict[str, Any]:
+        """获取指定 MBA handler 的状态。
+
+        Args:
+            name: handler 名称（不含 .py）
+
+        Returns:
+            Dict with name, status, in_sys_modules, rule_count.
+        """
+        return dict(self._conn.root.get_mba_handler_status(name))

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import shutil
 import sys
@@ -346,6 +347,31 @@ class IDAService(rpyc.Service):
             _shutdown_callback()
         return "shutdown requested"
 
+    # ── MBA Handler 热更新 ─────────────────────────────
+
+    def exposed_reload_mba_handler(self, name: str,
+                                   token: Optional[str] = None) -> Dict[str, Any]:
+        """热更新指定的 MBA handler。
+
+        Args:
+            name: handler 名称（不含 .py），如 "deflatten"
+            token: 认证令牌
+
+        Returns:
+            Dict: {"status": "ok", "handler": name, "rule_count": n}
+        """
+        if not _check_token(token, self._conn):
+            raise PermissionError("Invalid or missing token")
+        return _reload_mba_handler_impl(name)
+
+    def exposed_list_mba_handlers(self) -> List[Dict[str, Any]]:
+        """列出所有已加载的 MBA handlers 及其状态。"""
+        return _list_mba_handlers()
+
+    def exposed_get_mba_handler_status(self, name: str) -> Dict[str, Any]:
+        """获取指定 MBA handler 的状态。"""
+        return _get_mba_handler_status(name)
+
     # ── 内部 ─────────────────────────────────────
 
     def _cleanup_modules(self):
@@ -366,3 +392,131 @@ _shutdown_callback: Optional[Callable] = None
 def _request_shutdown():
     if _shutdown_callback:
         _shutdown_callback()
+
+
+# ── MBA Handler 热更新实现 ────────────────────────────────────────────────────
+
+_mba_handlers: Dict[str, Dict[str, Any]] = {}  # name -> {module, rules, mba_manager_ref}
+
+
+def _get_mba_manager():
+    """获取 ida_mba 的 MbaOptimizerManager 实例。"""
+    try:
+        # ida_mba 通过 set_manager() 把实例放到这里
+        from .ida_mba import get_manager
+        return get_manager()
+    except ImportError:
+        return None
+
+
+def _reload_mba_handler_impl(name: str) -> Dict[str, Any]:
+    """MBA handler 热更新实现。"""
+    handlers_dir = os.path.expanduser("~/.idaipy/handlers")
+    module_path = os.path.join(handlers_dir, f"{name}.py")
+
+    if not os.path.exists(module_path):
+        return {"status": "error", "message": f"Handler not found: {name}.py"}
+
+    # 1. 清理 sys.modules 缓存
+    module_key = f"mba_handlers.{name}"
+    if module_key in sys.modules:
+        del sys.modules[module_key]
+
+    # 2. 重新加载模块
+    spec = importlib.util.spec_from_file_location(module_key, module_path)
+    if not spec or not spec.loader:
+        return {"status": "error", "message": f"Failed to load spec for {name}"}
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_key] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        del sys.modules[module_key]
+        return {"status": "error", "message": f"Execution error: {exc}"}
+
+    # 3. 获取 manager 并注册规则
+    manager = _get_mba_manager()
+    rule_count = 0
+    rules = []
+
+    if manager is None:
+        # ida_mba 未加载，缓存规则但不注册
+        log(f"MBA manager not available, caching rules for {name}")
+    else:
+        # 获取规则类型（延迟导入，因为依赖 ida_hexrays）
+        try:
+            from .ida_mba.mba_optimizer import InstructionRule, BlockRule
+        except ImportError:
+            log(f"mba_optimizer not available (ida_hexrays?)")
+            return {"status": "error", "message": "mba_optimizer not available"}
+
+        if hasattr(module, 'RULE'):
+            rule = module.RULE()
+            rules.append(rule)
+            rule_count = 1
+            if isinstance(rule, InstructionRule):
+                manager.add_ins_rule(rule)
+            elif isinstance(rule, BlockRule):
+                manager.add_blk_rule(rule)
+        elif hasattr(module, 'HANDLERS'):
+            for rule_name, rule in module.HANDLERS:
+                rules.append(rule)
+                rule_count += 1
+                if isinstance(rule, InstructionRule):
+                    manager.add_ins_rule(rule)
+                elif isinstance(rule, BlockRule):
+                    manager.add_blk_rule(rule)
+
+    # 4. 追踪已加载的 handler
+    _mba_handlers[name] = {
+        "module": module,
+        "rules": rules,
+        "module_key": module_key,
+    }
+
+    msg = f"Reloaded handler '{name}' with {rule_count} rule(s)"
+    log(msg)
+    return {"status": "ok", "handler": name, "rule_count": rule_count}
+
+
+def _list_mba_handlers() -> List[Dict[str, Any]]:
+    """列出所有已加载的 MBA handlers。"""
+    result = []
+    handlers_dir = os.path.expanduser("~/.idaipy/handlers")
+
+    if not os.path.exists(handlers_dir):
+        return result
+
+    for filename in os.listdir(handlers_dir):
+        if not filename.endswith('.py') or filename.startswith('__'):
+            continue
+        name = filename[:-3]
+        info = _get_mba_handler_status(name)
+        result.append(info)
+
+    return result
+
+
+def _get_mba_handler_status(name: str) -> Dict[str, Any]:
+    """获取指定 MBA handler 的状态。"""
+    handlers_dir = os.path.expanduser("~/.idaipy/handlers")
+    module_path = os.path.join(handlers_dir, f"{name}.py")
+
+    if not os.path.exists(module_path):
+        return {"name": name, "status": "not_found"}
+
+    is_loaded = name in _mba_handlers
+    module_key = f"mba_handlers.{name}"
+    in_sys_modules = module_key in sys.modules
+
+    rule_count = 0
+    if is_loaded:
+        rule_count = len(_mba_handlers[name].get("rules", []))
+
+    return {
+        "name": name,
+        "status": "loaded" if is_loaded else "registered",
+        "in_sys_modules": in_sys_modules,
+        "rule_count": rule_count,
+    }

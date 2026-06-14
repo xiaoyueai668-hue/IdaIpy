@@ -88,6 +88,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_log.add_argument("--json", action="store_true",
                        help="以 JSON 格式输出")
 
+    # mba command
+    p_mba = sub.add_parser("mba", help="MBA (Microcode) 优化命令")
+    p_mba.add_argument("action", nargs="?",
+                       choices=("list", "reload", "status"),
+                       help="操作：list=列出所有, reload=热更新, status=查看状态")
+    p_mba.add_argument("handler_name", nargs="?", help="handler 名称")
+
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
@@ -173,6 +180,69 @@ def _dispatch(args: argparse.Namespace) -> int:
         client = IdaIpyClient(**client_kwargs)
         with client:
             return _dispatch_script(client, args)
+
+    elif args.command == "mba":
+        client_kwargs = {
+            "host": args.host,
+            "port": args.port,
+            "debug": args.debug,
+        }
+        client = IdaIpyClient(**client_kwargs)
+        with client:
+            return _dispatch_mba(client, args)
+    return 0
+
+
+def _dispatch_mba(client: IdaIpyClient, args: argparse.Namespace) -> int:
+    """处理 MBA 子命令。"""
+    action = args.action
+
+    if action is None:
+        # 没有指定 action，打印帮助
+        print("idaipy mba - MBA (Microcode) 优化命令")
+        print("")
+        print("用法:")
+        print("  idaipy mba list              # 列出所有 handlers")
+        print("  idaipy mba reload <name>     # 热更新指定 handler")
+        print("  idaipy mba status <name>     # 查看 handler 状态")
+        return 0
+
+    if action == "list":
+        handlers = client.list_mba_handlers()
+        if not handlers:
+            print("没有已注册的 handlers")
+            return 0
+        print(f"{'Name':<20} {'Status':<12} {'Rules':<8} {'In SysModules'}")
+        print("-" * 60)
+        for h in handlers:
+            print(f"{h.get('name', ''):<20} {h.get('status', ''):<12} "
+                  f"{h.get('rule_count', 0):<8} {h.get('in_sys_modules', False)}")
+        return 0
+
+    elif action == "reload":
+        if not args.handler_name:
+            _err("reload 需要指定 handler 名称")
+            return 1
+        result = client.reload_mba_handler(args.handler_name)
+        if result.ok:
+            print(f"Handler '{args.handler_name}' 热更新成功，"
+                  f"规则数: {result.stdout}")
+        else:
+            print(f"Error: {result.error_message}", file=sys.stderr)
+            return 1
+        return 0
+
+    elif action == "status":
+        if not args.handler_name:
+            _err("status 需要指定 handler 名称")
+            return 1
+        status = client.get_mba_handler_status(args.handler_name)
+        print(f"Handler: {status.get('name')}")
+        print(f"Status: {status.get('status')}")
+        print(f"Rules: {status.get('rule_count', 0)}")
+        print(f"In SysModules: {status.get('in_sys_modules', False)}")
+        return 0
+
     return 0
 
 
